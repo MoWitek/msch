@@ -1,0 +1,269 @@
+import json.decoder
+from base64 import b64decode as b64d, b64encode as b64e
+from json import loads as js_loads, dumps as js_dumps
+from zlib import compress, decompress
+
+
+def encode_n_to_m_base(n: int, base: int = 256) -> list:
+    n, m = divmod(n, base)
+    ar = [m]
+    while n >= 1:
+        n, m = divmod(n, base)
+        ar += [m]
+    return ar[::-1]
+
+def decode_n_from_m_base(iterable: list or bytes, base=256) -> int:
+    n = 0
+    exp = -1
+    for i in iterable[::-1]:
+        exp += 1
+        n += int(i) * (base ** exp)
+    return n
+
+def lenghtifiy(iterable: bytes, length: int) -> bytes:
+    return b"\x00" * (length - len(iterable)) + iterable
+
+def loads(sth):
+    try:
+        return js_loads(sth)
+    except json.decoder.JSONDecodeError:
+        return sth
+
+def dumps(sth):
+    if type(sth) is str:
+        return sth
+
+    try:
+        return js_dumps(sth)
+    except json.decoder.JSONDecodeError:
+        return sth
+
+class ByteStream:
+    def __init__(self, b: bytes or str = b""):
+        self.val: bytes = b
+
+    def __repr__(self):
+        return str(self.val)
+
+    # # #
+
+    @staticmethod
+    def __int_to_bin(n: int, l: int) -> bytes:
+        return lenghtifiy(bytes(encode_n_to_m_base(n)), l)
+
+    @staticmethod
+    def __bin_to_int(b: bytes) -> int:
+        return decode_n_from_m_base(b)
+
+    # # #
+
+    def base64encode(self):
+        self.val = b64e(self.val).decode()
+        return self
+
+    def base64decode(self):
+        self.val = b64d(self.val)
+        return self
+
+    def compress(self):
+        self.val = compress(self.val)
+        return self
+
+    def decompress(self):
+        self.val = decompress(self.val)
+        return self
+
+    # # #
+
+    def __read(self, n: int):
+        o = self.val[:n]
+        self.val = self.val[n:]
+        return o
+
+    def read(self, n) -> bytes:
+        return self.__read(n)
+
+    def readByte(self) -> bytes:
+        return self.__read(1)
+
+    def readShort(self) -> int:
+        return decode_n_from_m_base(self.__read(2))
+
+    def readInt(self) -> int:
+        return decode_n_from_m_base(self.__read(4))
+
+    def readUTF(self, header_len: int = 2) -> str:
+        return self.__read(self.__bin_to_int(self.__read(header_len))).decode()
+
+    # # #
+
+    def __write(self, b):
+        self.val += b
+
+    def write(self, b: bytes):
+        self.__write(b)
+
+    def writeByte(self, b: bytes):
+        self.__write(b[:1])
+
+    def writeShort(self, i: int):
+        self.__write(self.__int_to_bin(i, 2))
+
+    def writeInt(self, i: int):
+        self.__write(self.__int_to_bin(i, 4))
+
+    def writeUTF(self, utf: str, header_len: int = 2):
+        self.__write(self.__int_to_bin(len(utf), header_len) + utf.encode())
+
+class Array2D:
+    # ik this is retarded, but hey looks nice (jk)
+    def __init__(self, width, height, empty_space=None):
+        # self.data = [[empty_space] * width] * height  # cant do this, else assignment will point to same object and things will duplicate
+        self.data = [[empty_space for n in range(width)] for n in range(height)]
+        self.w = width
+        self.h = height
+
+    def __repr__(self):
+        return str(self.data).replace("],", "],\n")
+
+    def __getitem__(self, item):
+        if type(item) is not tuple:
+            return self.data[item]
+        else:
+            x, y = item
+            return self.data[y][x]
+
+    def __setitem__(self, key, value):
+        if type(key) is not tuple:
+            self.data[key] = value
+        else:
+            x, y = key
+            self.data[y][x] = value
+
+class Block:
+    def __init__(self, name: str, rotation: int):
+        self.name = name
+        self.rotation = rotation
+
+class Tile:
+    def __init__(self, x: int, y: int, block: Block):
+        self.x, self.y = x, y
+        self.block = block
+
+class Schematic:
+    def __init__(self):
+        self.header = "msch"
+        self.version = 1
+
+        self.height = 1
+        self.width = 1
+
+        self.name = ""
+        self.description = ""
+        self.labels = []
+
+        self.blocks = []
+        self.tiles = Array2D(1, 1)
+
+        self.logic_code = []
+        self.logic_connections = []
+
+        self.raw = {}
+
+    def __repr__(self):
+        return "Schematic: " + self.name
+
+    @staticmethod
+    def loads(bau_plan: str):
+        raw = {}
+
+        bs = ByteStream(bau_plan).base64decode()
+        raw["header"] = bs.read(4).decode()
+        raw["version"] = bs.read(1)[0]
+
+        bs.decompress()
+
+        raw["width"] = bs.readShort()
+        raw["height"] = bs.readShort()
+
+        tags = {}
+        for n in range(bs.readByte()[0]):
+            key = bs.readUTF()
+            val = bs.readUTF()
+            tags[key] = loads(val)
+        raw["tags"] = tags
+
+        blocks = []
+        for n in range(bs.readByte()[0]):
+            blocks.append(bs.readUTF())
+        raw["blocks"] = blocks
+
+        tiles = []
+        for n in range(bs.readInt()):
+            b = bs.readByte()[0]
+            x = bs.readShort()
+            y = bs.readShort()
+            r = bs.readShort()
+            tiles += [[b, x, y, r]]
+        raw["tiles"] = tiles
+
+        s = Schematic()
+        s.header = raw["header"]
+        s.version = raw["version"]
+
+        s.width = raw["width"]
+        s.height = raw["height"]
+
+        s.name = raw["tags"]["name"]
+        s.description = raw["tags"]["description"]
+        s.labels = raw["tags"]["labels"]
+
+        s.blocks = raw["blocks"]
+        s.tiles = raw["tiles"]
+
+        s.raw = raw
+        return s
+
+    def saves(self):
+        bs = ByteStream()
+
+        bs.writeShort(self.width)
+        bs.writeShort(self.height)
+
+        bs.writeByte(bytes([len(self.raw["tags"])]))
+        for t in self.raw["tags"]:
+            bs.writeUTF(t)
+            bs.writeUTF(dumps(self.raw["tags"][t]))
+
+        bs.writeByte(bytes([len(self.raw["blocks"])]))
+        for b in self.raw["blocks"]:
+            bs.writeUTF(b)
+
+        bs.writeInt(len(self.raw["tiles"]))
+        for t in self.raw["tiles"]:
+            b, x, y, r = t
+            bs.writeByte(bytes([b]))
+            bs.writeShort(x)
+            bs.writeShort(y)
+            bs.writeShort(r)
+
+        return b64e(
+            self.raw["header"].encode() +
+            bytes([self.raw["version"]]) +
+            compress(bs.val)).decode()
+
+SCHEMATIC = "bXNjaAF4nGNgZGBkZmDJS8xNZWBMZOBOSS1OLsosKMnMz2NgYGDLSUxKzSlmYIqOZWTgLcksSczLLM3VLU/MyQHKMjKAATMAH8IPSQ=="
+
+
+s = Schematic.loads(SCHEMATIC)
+
+s1 = SCHEMATIC
+s2 = s.saves()
+
+print(decompress(b64d(s1)[5:]))
+print(decompress(b64d(s2)[5:]))
+
+print()
+
+print(s1)
+print(s2)
